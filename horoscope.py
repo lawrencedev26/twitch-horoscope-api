@@ -12,19 +12,19 @@ app = FastAPI()
 def ask_gemini_to_shorten(sign_name, long_text):
     prompt = (
         f"你現在是 Twitch 實況聊天室的占卜大師，說話幽默、一針見血、帶點實況梗。\n\n"
-        f"【絕對命令】：請將下方提供的星座運勢原創長文，徹底改寫並濃縮成『一段 100 字左右』的精闢短評。\n"
+        f"【絕對命令】：請將下方運勢長文濃縮成『大約 100 到 130 字左右』的精闢短評。\n"
         f"【規則要求】：\n"
-        f"1. 必須包含運勢核心重點或該注意的雷區。\n"
-        f"2. 語氣可以調侃，字數嚴格限制在 80 到 120 字之間，絕對不要有換行符號。\n"
-        f"3. 絕對、千萬、嚴禁直接複製或照抄原本的長文！必須用你自己的口吻改寫！\n\n"
-        f"【以下是需要你改寫濃縮的運勢長文】：\n"
+        f"1. 必須包含運勢核心重點。\n"
+        f"2. 語氣調侃，絕對不要有換行符號。\n"
+        f"3. 嚴禁直接照抄原文！\n"
+        f"4. 請確保最後一句話有完整說完，並且務必以全形句號「。」作結尾！\n\n"
+        f"【運勢長文】：\n"
         f"{long_text}"
     )
     try:
-        # 🌟 修正：把 Client 的建立搬進 try 裡面，並強制檢查 Key
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY 環境變數，請檢查 Environment 設定。"
+            return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY。"
             
         client = genai.Client(api_key=api_key)
         
@@ -34,13 +34,13 @@ def ask_gemini_to_shorten(sign_name, long_text):
         )
         ai_reply = response.text.strip()
         
-        if len(ai_reply) > 150:
-            return ai_reply[:100] + "..."
+        # 🛡️ 放寬防禦機制：改成超過 350 字才切斷，讓 AI 有足夠空間把話說完
+        if len(ai_reply) > 200:
+            return ai_reply[:200] + "..."
             
         return ai_reply
     except Exception as e:
-        # 🌟 修正：萬一失敗，直接把錯誤訊息（e）噴出來，讓我們知道為什麼失敗
-        return f"【AI 呼叫失敗原因】：{str(e)}"
+        return f"【AI 呼叫失敗】：{str(e)}"
 
 def get_today_horoscope(sign_name):
     sign_map = {
