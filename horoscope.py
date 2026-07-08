@@ -1,8 +1,10 @@
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
+# 導入這行用來關閉因為跳過安全檢查而跳出的滿大堆警告訊息
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# 建立一個 FastAPI 應用程式物件（這就是你的網頁外殼）
 app = FastAPI()
 
 def get_today_horoscope(sign_name):
@@ -19,7 +21,10 @@ def get_today_horoscope(sign_name):
     
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        response = requests.get(url, headers=headers)
+        
+        # ⭐【關鍵修正】：在這裡加上 verify=False，強行跳過 SSL 憑證檢查
+        response = requests.get(url, headers=headers, verify=False)
+        
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, "html.parser")
         content_tag = soup.find(class_="TODAY_CONTENT")
@@ -32,18 +37,12 @@ def get_today_horoscope(sign_name):
     except Exception as e:
         return f"💥 伺服器連線異常: {str(e)}"
 
-# 🪐 這裡設定網頁路由：當有人連到 /horoscope 時觸發
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
-    # sign 就是網址後面的參數，例如 ?sign=雙子座
     if not sign:
         return "🔮 請提供星座名稱，例如: ?sign=雙子座"
-    
-    # 呼叫上面的爬蟲函式，並直接回傳文字給網頁
     return get_today_horoscope(sign)
 
-# 啟動網頁伺服器
 if __name__ == "__main__":
     import uvicorn
-    # 讓伺服器跑在本地端的 8000 連接埠
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
