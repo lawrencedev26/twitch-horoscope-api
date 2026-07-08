@@ -1,17 +1,15 @@
+import os
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
 import urllib3
 from google import genai
-import os
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
-client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def ask_gemini_to_shorten(sign_name, long_text):
-    # 🌟 用更強硬、更明確的結構性命令強迫它濃縮，並明確禁止它直接複製原文
     prompt = (
         f"你現在是 Twitch 實況聊天室的占卜大師，說話幽默、一針見血、帶點實況梗。\n\n"
         f"【絕對命令】：請將下方提供的星座運勢原創長文，徹底改寫並濃縮成『一段 100 字左右』的精闢短評。\n"
@@ -23,19 +21,26 @@ def ask_gemini_to_shorten(sign_name, long_text):
         f"{long_text}"
     )
     try:
+        # 🌟 修正：把 Client 的建立搬進 try 裡面，並強制檢查 Key
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY 環境變數，請檢查 Environment 設定。"
+            
+        client = genai.Client(api_key=api_key)
+        
         response = client.models.generate_content(
             model='gemini-2.5-flash',
             contents=prompt,
         )
         ai_reply = response.text.strip()
         
-        # 🛡️【終極防禦】：萬一 AI 真的不聽話，吐出來的字數跟原文一樣長，我們用程式強行切斷它
         if len(ai_reply) > 150:
             return ai_reply[:100] + "..."
             
         return ai_reply
     except Exception as e:
-        return long_text[:100] + "..."
+        # 🌟 修正：萬一失敗，直接把錯誤訊息（e）噴出來，讓我們知道為什麼失敗
+        return f"【AI 呼叫失敗原因】：{str(e)}"
 
 def get_today_horoscope(sign_name):
     sign_map = {
@@ -57,7 +62,6 @@ def get_today_horoscope(sign_name):
         content_tag = soup.find(class_="TODAY_CONTENT")
         
         if content_tag:
-            # ⭐【只回傳純文字】：不做多餘的包裝，把最乾淨的原創長文丟回去
             return content_tag.text.replace("\n", " ").strip()
         else:
             return "ERROR_PARSE"
@@ -69,10 +73,8 @@ def read_horoscope(sign: str = ""):
     if not sign:
         return "🔮 請提供星座名稱，例如: ?sign=雙子座"
         
-    # 1. 去網站撈取最原始的長文
     raw_fortune = get_today_horoscope(sign)
     
-    # 2. 判斷爬蟲是否異常
     if raw_fortune == "ERROR_SIGN":
         return "🔮 請輸入正確的星座名稱（例如：!星座 雙子座）"
     elif raw_fortune == "ERROR_PARSE":
@@ -80,10 +82,8 @@ def read_horoscope(sign: str = ""):
     elif raw_fortune == "ERROR_CONN":
         return "💥 伺服器連線異常，請稍後再試。"
         
-    # 3. 確保只在這裡呼叫「唯一一次」Gemini AI 進行 100 字濃縮
     short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
     
-    # 4. 輸出最終有條理的成品
     return f"【{sign}今日運勢】{short_fortune}"
 
 if __name__ == "__main__":
