@@ -40,11 +40,18 @@ def ask_gemini_to_shorten(sign_name, long_text):
         )
         ai_reply = response.text.strip()
         
-        if len(ai_reply) > 200:
-            return ai_reply[:200] + "..."
+        # 🛡️ 防禦升級 1：把字數強制鎖定在 250 字。
+        # 既能讓 AI 把 130 字的話好好說完，又絕對不會超過 Nightbot 的 400 字極限！
+        if len(ai_reply) > 250:
+            return ai_reply[:240] + "..."
+            
         return ai_reply
     except Exception as e:
-        return f"【AI 呼叫失敗】：{str(e)}"
+        # 🛡️ 防禦升級 2：萬一 Google 傳回來的錯誤代碼有幾百字，我們也無情剪斷它！
+        error_msg = str(e)
+        if len(error_msg) > 100:
+            error_msg = error_msg[:100] + "..."
+        return f"【AI 呼叫失敗】：{error_msg}"
 
 def get_today_horoscope(sign_name):
     sign_map = {
