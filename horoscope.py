@@ -99,8 +99,8 @@ def auto_fetch_all_signs():
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
                 fortune_cache[cache_key] = final_result
                 
-        # 停頓 2 秒，避免瞬間呼叫 12 次 AI 觸發 Google 免費額度的速率限制
-        time.sleep(2)
+        # 停頓 5 秒，避免瞬間呼叫 12 次 AI 觸發 Google 免費額度的速率限制
+        time.sleep(5)
 
 # 🌟 新增的專屬後門：用來觸發背景更新
 @app.get("/warmup")
