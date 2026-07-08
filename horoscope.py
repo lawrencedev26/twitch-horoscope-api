@@ -66,7 +66,21 @@ def get_today_horoscope(sign_name):
 def read_horoscope(sign: str = ""):
     if not sign:
         return "🔮 請提供星座名稱，例如: ?sign=雙子座"
-    return get_today_horoscope(sign)
+        
+    # 確保抓到星座資料
+    raw_fortune = get_today_horoscope(sign)
+    
+    # 防呆：如果原本就回傳錯誤訊息（例如"請輸入正確星座"），直接吐出，不浪費 API KEY
+    if "❌" in raw_fortune or "🔮" in raw_fortune or "💥" in raw_fortune:
+        return raw_fortune
+        
+    # 強制在這裡送進 Gemini AI 進行 100 字濃縮
+    try:
+        short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
+        return f"【{sign}今日運勢】{short_fortune}"
+    except Exception as e:
+        # 如果 AI 真的萬一掛掉，才降級回傳原始文字的前 100 字
+        return f"【{sign}今日運勢】(AI維護中) {raw_fortune[:100]}..."
 
 if __name__ == "__main__":
     import uvicorn
