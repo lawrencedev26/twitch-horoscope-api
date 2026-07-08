@@ -72,7 +72,7 @@ def read_horoscope(sign: str = ""):
     short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
     
     # 4. 輸出最終有條理的成品
-    return f"🌌【{sign}今日運勢】{short_fortune}"
+    return f"【{sign}今日運勢】{short_fortune}"
 
 if __name__ == "__main__":
     import uvicorn
