@@ -1,11 +1,35 @@
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI
-# 導入這行用來關閉因為跳過安全檢查而跳出的滿大堆警告訊息
 import urllib3
+# 導入 Google 官方最新 GenAI 套件
+from google import genai
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
+
+# 🪐 初始化 Gemini 客戶端
+# 它會自動去抓取系統環境變數中的 GEMINI_API_KEY
+client = genai.Client()
+
+def ask_gemini_to_shorten(sign_name, long_text):
+    # 🌟 修改提示詞：明確指定 80~120 字的區間，並要求提供具體運勢分析
+    prompt = (
+        f"你是一個說話帶點實況梗、幽默且一針見血的圖奇聊天室占卜大師。\n"
+        f"請幫我把以下【{sign_name}】的今日運勢，精簡成一段「適合聊天室閱讀、大約 100 字上下」的精闢短評。\n"
+        f"內容必須包含整體的運勢亮點或該注意的雷區（例如工作、感情或財運），語氣可以調侃，但字數嚴格控制在 80 到 120 字之間，不要分行：\n\n"
+        f"{long_text}"
+    )
+    try:
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text.strip()
+    except Exception as e:
+        # 防禦機制：若 AI 出錯，放寬切片長度到 100 字
+        return long_text[:100] + "..."
 
 def get_today_horoscope(sign_name):
     sign_map = {
@@ -21,21 +45,18 @@ def get_today_horoscope(sign_name):
     
     try:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        
-        # ⭐【關鍵修正】：在這裡加上 verify=False，強行跳過 SSL 憑證檢查
         response = requests.get(url, headers=headers, verify=False)
-        
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, "html.parser")
         content_tag = soup.find(class_="TODAY_CONTENT")
         
         if content_tag:
-            # 1. 取得網頁文字，並把裡面的換行符號 (\n) 全部換成空白
             clean_text = content_tag.text.replace("\n", " ").strip()
             
-            # 2. 放寬字數到 150 個字，讓敘述更完整
-            luck_text = clean_text[:150] + "..."
-            return f"🌌【{sign_name}今日運勢】{luck_text}"
+            # ⭐【最大大腦升級】：把原本抓下來的長文，丟給 Gemini 濃縮！
+            short_luck_text = ask_gemini_to_shorten(sign_name, clean_text)
+            
+            return f"【{sign_name}今日運勢】{short_luck_text}"
         else:
             return f"❌ 暫時無法解析 {sign_name} 的運勢網頁。"
     except Exception as e:
