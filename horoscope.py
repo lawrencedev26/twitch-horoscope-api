@@ -10,10 +10,15 @@ app = FastAPI()
 client = genai.Client()
 
 def ask_gemini_to_shorten(sign_name, long_text):
+    # 🌟 用更強硬、更明確的結構性命令強迫它濃縮，並明確禁止它直接複製原文
     prompt = (
-        f"你是一個說話帶點實況梗、幽默且一針見血的圖奇聊天室占卜大師。\n"
-        f"請幫我把以下【{sign_name}】的今日運勢，精簡成一段「適合聊天室閱讀、大約 100 字上下」的精闢短評。\n"
-        f"內容必須包含整體的運勢亮點或該注意的雷區（例如工作、感情或財運），語氣可以調侃，但字數嚴格控制在 80 到 120 字之間，絕對不要換行：\n\n"
+        f"你現在是 Twitch 實況聊天室的占卜大師，說話幽默、一針見血、帶點實況梗。\n\n"
+        f"【絕對命令】：請將下方提供的星座運勢原創長文，徹底改寫並濃縮成『一段 100 字左右』的精闢短評。\n"
+        f"【規則要求】：\n"
+        f"1. 必須包含運勢核心重點或該注意的雷區。\n"
+        f"2. 語氣可以調侃，字數嚴格限制在 80 到 120 字之間，絕對不要有換行符號。\n"
+        f"3. 絕對、千萬、嚴禁直接複製或照抄原本的長文！必須用你自己的口吻改寫！\n\n"
+        f"【以下是需要你改寫濃縮的運勢長文】：\n"
         f"{long_text}"
     )
     try:
@@ -21,7 +26,13 @@ def ask_gemini_to_shorten(sign_name, long_text):
             model='gemini-2.5-flash',
             contents=prompt,
         )
-        return response.text.strip()
+        ai_reply = response.text.strip()
+        
+        # 🛡️【終極防禦】：萬一 AI 真的不聽話，吐出來的字數跟原文一樣長，我們用程式強行切斷它
+        if len(ai_reply) > 150:
+            return ai_reply[:100] + "..."
+            
+        return ai_reply
     except Exception as e:
         return long_text[:100] + "..."
 
