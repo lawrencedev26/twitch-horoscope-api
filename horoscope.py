@@ -3,11 +3,12 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI
 import urllib3
 from google import genai
+import os
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
-client = genai.Client()
+client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
 def ask_gemini_to_shorten(sign_name, long_text):
     # 🌟 用更強硬、更明確的結構性命令強迫它濃縮，並明確禁止它直接複製原文
