@@ -30,7 +30,11 @@ def get_today_horoscope(sign_name):
         content_tag = soup.find(class_="TODAY_CONTENT")
         
         if content_tag:
-            luck_text = content_tag.text.strip()[:80] + "..."
+            # 1. 取得網頁文字，並把裡面的換行符號 (\n) 全部換成空白
+            clean_text = content_tag.text.replace("\n", " ").strip()
+            
+            # 2. 放寬字數到 150 個字，讓敘述更完整
+            luck_text = clean_text[:150] + "..."
             return f"🌌【{sign_name}今日運勢】{luck_text}"
         else:
             return f"❌ 暫時無法解析 {sign_name} 的運勢網頁。"
