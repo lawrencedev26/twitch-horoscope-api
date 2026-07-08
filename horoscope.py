@@ -87,7 +87,7 @@ def auto_fetch_all_signs():
         
         if raw_fortune not in ["ERROR_SIGN", "ERROR_PARSE", "ERROR_CONN"]:
             short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
-            final_result = f"🌌【{sign}今日運勢】{short_fortune}"
+            final_result = f"🔮【{sign}今日運勢】{short_fortune}"
             
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
                 fortune_cache[cache_key] = final_result
@@ -124,7 +124,7 @@ def read_horoscope(sign: str = ""):
         return "💥 伺服器連線異常，請稍後再試。"
         
     short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
-    final_result = f"🌌【{sign}今日運勢】{short_fortune}"
+    final_result = f"🔮【{sign}今日運勢】{short_fortune}"
     
     if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
         fortune_cache[cache_key] = final_result
