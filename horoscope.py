@@ -35,7 +35,7 @@ def ask_gemini_to_shorten(sign_name, long_text):
             
         client = genai.Client(api_key=api_key)
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.5-flash',
             contents=prompt,
         )
         ai_reply = response.text.strip()
