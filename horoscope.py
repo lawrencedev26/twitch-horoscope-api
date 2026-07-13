@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+import psycopg2
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, BackgroundTasks
 import urllib3
@@ -10,7 +11,72 @@ from datetime import datetime, timezone, timedelta
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
-fortune_cache = {}
+
+# 🚀 程式啟動時，自動檢查並建立資料庫表格
+@app.on_event("startup")
+def startup_db_client():
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        print("⚠️ 警告：未設定 DATABASE_URL 環境變數")
+        return
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        # 建立表格，增加 target_date 欄位來確保我們抓到的是「今天」的運勢
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS horoscope (
+            sign VARCHAR(10) PRIMARY KEY,
+            fortune_text TEXT NOT NULL,
+            target_date VARCHAR(10) NOT NULL
+        );
+        """)
+        conn.commit()
+        print("✓ PostgreSQL 資料庫初始化成功！")
+    except Exception as e:
+        print(f"❌ 初始化資料庫失敗: {e}")
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+# 🗄️ 新增：把資料寫入 PostgreSQL
+def save_fortune_to_db(sign, text, target_date):
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url: return
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        query = """
+        INSERT INTO horoscope (sign, fortune_text, target_date)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (sign) 
+        DO UPDATE SET fortune_text = EXCLUDED.fortune_text, target_date = EXCLUDED.target_date;
+        """
+        cursor.execute(query, (sign, text, target_date))
+        conn.commit()
+    except Exception as e:
+        print(f"DB寫入失敗: {e}")
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
+# 🗄️ 新增：從 PostgreSQL 讀取資料
+def get_fortune_from_db(sign, target_date):
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url: return None
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        # 必須是指定的星座，而且日期必須是「今天」
+        query = "SELECT fortune_text FROM horoscope WHERE sign = %s AND target_date = %s;"
+        cursor.execute(query, (sign, target_date))
+        result = cursor.fetchone()
+        return result[0] if result else None
+    except Exception as e:
+        print(f"DB讀取失敗: {e}")
+        return None
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
 
 def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
@@ -40,14 +106,11 @@ def ask_gemini_to_shorten(sign_name, long_text):
         )
         ai_reply = response.text.strip()
         
-        # 🛡️ 防禦升級 1：把字數強制鎖定在 250 字。
-        # 既能讓 AI 把 130 字的話好好說完，又絕對不會超過 Nightbot 的 400 字極限！
         if len(ai_reply) > 250:
             return ai_reply[:240] + "..."
             
         return ai_reply
     except Exception as e:
-        # 🛡️ 防禦升級 2：萬一 Google 傳回來的錯誤代碼有幾百字，我們也無情剪斷它！
         error_msg = str(e)
         if len(error_msg) > 100:
             error_msg = error_msg[:100] + "..."
@@ -79,7 +142,7 @@ def get_today_horoscope(sign_name):
     except Exception as e:
         return "ERROR_CONN"
 
-# 🌟 新增的自動更新腳本
+# 🌟 自動更新腳本（寫入資料庫）
 def auto_fetch_all_signs():
     signs = [
         "牡羊座", "金牛座", "雙子座", "巨蟹座",
@@ -89,25 +152,23 @@ def auto_fetch_all_signs():
     today_date = get_tw_today()
     
     for sign in signs:
-        cache_key = f"{today_date}_{sign}"
         raw_fortune = get_today_horoscope(sign)
         
         if raw_fortune not in ["ERROR_SIGN", "ERROR_PARSE", "ERROR_CONN"]:
             short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
             final_result = f"🔮【{sign}今日運勢】{short_fortune}"
             
+            # 只有在 AI 呼叫成功時，才存入資料庫
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
-                fortune_cache[cache_key] = final_result
+                save_fortune_to_db(sign, final_result, today_date)
                 
-        # 停頓 5 秒，避免瞬間呼叫 12 次 AI 觸發 Google 免費額度的速率限制
+        # 停頓 5 秒保護額度
         time.sleep(5)
 
-# 🌟 新增的專屬後門：用來觸發背景更新
 @app.get("/warmup")
 def warmup_cache(background_tasks: BackgroundTasks):
-    # 讓程式在背景去跑 auto_fetch_all_signs，網頁則立刻回傳成功，不讓呼叫端乾等
     background_tasks.add_task(auto_fetch_all_signs)
-    return {"status": "開始在背景自動抓取 12 星座運勢！大約需時 30 秒。"}
+    return {"status": "開始在背景自動抓取 12 星座運勢，並存入雲端資料庫！大約需時 60 秒。"}
 
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
@@ -115,13 +176,13 @@ def read_horoscope(sign: str = ""):
         return "🔮 請提供星座名稱，例如: ?sign=雙子座"
         
     today_date = get_tw_today()
-    cache_key = f"{today_date}_{sign}"
     
-    # 百寶箱命中，0.01 秒回傳
-    if cache_key in fortune_cache:
-        return fortune_cache[cache_key]
+    # 🎯 優先去資料庫找今天的運勢 (0.01秒超高速)
+    db_fortune = get_fortune_from_db(sign, today_date)
+    if db_fortune:
+        return db_fortune
         
-    # 如果百寶箱沒有（例如鬧鐘還沒響就有人查），才即時查
+    # 如果資料庫沒有（例如第一天剛開機，或半夜鬧鐘還沒響），才即時抓取
     raw_fortune = get_today_horoscope(sign)
     if raw_fortune == "ERROR_SIGN":
         return "🔮 請輸入正確的星座名稱（例如：!星座 雙子座）"
@@ -133,8 +194,9 @@ def read_horoscope(sign: str = ""):
     short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
     final_result = f"🔮【{sign}今日運勢】{short_fortune}"
     
+    # 抓取成功後，順手存進資料庫
     if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
-        fortune_cache[cache_key] = final_result
+        save_fortune_to_db(sign, final_result, today_date)
         
     return final_result
 
