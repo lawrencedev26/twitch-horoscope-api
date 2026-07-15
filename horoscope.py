@@ -22,7 +22,6 @@ def startup_db_client():
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
-        # 建立表格，增加 target_date 欄位來確保我們抓到的是「今天」的運勢
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS horoscope (
             sign VARCHAR(10) PRIMARY KEY,
@@ -38,7 +37,7 @@ def startup_db_client():
         if 'cursor' in locals(): cursor.close()
         if 'conn' in locals(): conn.close()
 
-# 🗄️ 新增：把資料寫入 PostgreSQL
+# 🗄️ 把資料寫入 PostgreSQL
 def save_fortune_to_db(sign, text, target_date):
     db_url = os.environ.get("DATABASE_URL")
     if not db_url: return
@@ -53,20 +52,20 @@ def save_fortune_to_db(sign, text, target_date):
         """
         cursor.execute(query, (sign, text, target_date))
         conn.commit()
+        print(f"✓ [{sign}] 成功寫入資料庫！")
     except Exception as e:
-        print(f"DB寫入失敗: {e}")
+        print(f"❌ [{sign}] DB寫入失敗: {e}")
     finally:
         if 'cursor' in locals(): cursor.close()
         if 'conn' in locals(): conn.close()
 
-# 🗄️ 新增：從 PostgreSQL 讀取資料
+# 🗄️ 從 PostgreSQL 讀取資料
 def get_fortune_from_db(sign, target_date):
     db_url = os.environ.get("DATABASE_URL")
     if not db_url: return None
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
-        # 必須是指定的星座，而且日期必須是「今天」
         query = "SELECT fortune_text FROM horoscope WHERE sign = %s AND target_date = %s;"
         cursor.execute(query, (sign, target_date))
         result = cursor.fetchone()
@@ -82,6 +81,7 @@ def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime("%Y-%m-%d")
 
+# 🧠 核心升級：具有 5 次指數退避重試機值的 AI 翻譯器
 def ask_gemini_to_shorten(sign_name, long_text):
     prompt = (
         f"你現在一位女性占卜師，感覺嚴肅且溫柔，還有修習過心理學碩士，非常體貼的占卜師。\n\n"
@@ -94,27 +94,44 @@ def ask_gemini_to_shorten(sign_name, long_text):
         f"【運勢長文】：\n"
         f"{long_text}"
     )
-    try:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY。"
-            
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model='gemini-3.5-flash',
-            contents=prompt,
-        )
-        ai_reply = response.text.strip()
+    
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY。"
         
-        if len(ai_reply) > 250:
-            return ai_reply[:240] + "..."
+    client = genai.Client(api_key=api_key)
+    
+    max_retries = 5
+    delay = 5  # 初始重試等待 5 秒
+    
+    for attempt in range(max_retries):
+        try:
+            # 使用官方最推薦、最穩定的免費版主力模型 gemini-2.5-flash
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=prompt,
+            )
+            ai_reply = response.text.strip()
             
-        return ai_reply
-    except Exception as e:
-        error_msg = str(e)
-        if len(error_msg) > 100:
-            error_msg = error_msg[:100] + "..."
-        return f"【AI 呼叫失敗】：{error_msg}"
+            if len(ai_reply) > 250:
+                return ai_reply[:240] + "..."
+                
+            return ai_reply
+            
+        except Exception as e:
+            error_msg = str(e)
+            # 如果是因為 429 速率限制或配額問題，觸發重試機制
+            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                print(f"⚠️ [{sign_name}] 觸發 Gemini 429 限制，將於 {delay} 秒後進行第 {attempt + 1}/{max_retries} 次重試...")
+                time.sleep(delay)
+                delay *= 2  # 每次失敗等待時間加倍 (5s, 10s, 20s, 40s)
+            else:
+                # 其他非 429 的硬性錯誤（例如 API Key 錯誤）直接返回，不浪費時間重試
+                if len(error_msg) > 100:
+                    error_msg = error_msg[:100] + "..."
+                return f"【AI 呼叫失敗】：{error_msg}"
+                
+    return f"【AI 呼叫失敗】：Gemini 限制重試 {max_retries} 次均告失敗。"
 
 def get_today_horoscope(sign_name):
     sign_map = {
@@ -151,6 +168,8 @@ def auto_fetch_all_signs():
     ]
     today_date = get_tw_today()
     
+    print(f"⏰ 開始執行 12 星座運勢背景暖機作業，今日日期：{today_date}")
+    
     for sign in signs:
         raw_fortune = get_today_horoscope(sign)
         
@@ -161,14 +180,18 @@ def auto_fetch_all_signs():
             # 只有在 AI 呼叫成功時，才存入資料庫
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
                 save_fortune_to_db(sign, final_result, today_date)
+            else:
+                print(f"❌ [{sign}] 暖機失敗，跳過寫入資料庫。")
                 
-        # 停頓 5 秒保護額度
-        time.sleep(5)
+        # 停頓 6 秒（安全降頻，避免頻繁觸發 15 RPM 限制）
+        time.sleep(6)
+    
+    print("✨ 背景暖機作業結束！")
 
 @app.get("/warmup")
 def warmup_cache(background_tasks: BackgroundTasks):
     background_tasks.add_task(auto_fetch_all_signs)
-    return {"status": "開始在背景自動抓取 12 星座運勢，並存入雲端資料庫！大約需時 60 秒。"}
+    return {"status": "開始在背景自動抓取 12 星座運勢，並存入雲端資料庫！大約需時 80 秒。"}
 
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
@@ -182,7 +205,7 @@ def read_horoscope(sign: str = ""):
     if db_fortune:
         return db_fortune
         
-    # 如果資料庫沒有（例如第一天剛開機，或半夜鬧鐘還沒響），才即時抓取
+    # 如果資料庫沒有（例如暖機中途失敗漏掉的星座），才即時抓取
     raw_fortune = get_today_horoscope(sign)
     if raw_fortune == "ERROR_SIGN":
         return "🔮 請輸入正確的星座名稱（例如：!星座 雙子座）"
