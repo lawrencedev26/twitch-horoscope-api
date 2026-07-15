@@ -108,7 +108,7 @@ def ask_gemini_to_shorten(sign_name, long_text):
         try:
             # 使用官方最推薦、最穩定的免費版主力模型 gemini-2.5-flash
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.5-flash',
                 contents=prompt,
             )
             ai_reply = response.text.strip()
