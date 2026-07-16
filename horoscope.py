@@ -101,7 +101,7 @@ def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
         
     client = genai.Client(api_key=api_key)
     
-    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
+    models_to_try = ['gemini-2.0-flash', 'gemini-2.5-flash']
     last_error = ""
     
     for model_name in models_to_try:
