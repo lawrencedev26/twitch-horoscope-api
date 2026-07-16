@@ -12,7 +12,6 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
-# 🚀 程式啟動時，自動檢查並建立資料庫表格
 @app.on_event("startup")
 def startup_db_client():
     db_url = os.environ.get("DATABASE_URL")
@@ -37,7 +36,6 @@ def startup_db_client():
         if 'cursor' in locals(): cursor.close()
         if 'conn' in locals(): conn.close()
 
-# 🗄️ 把資料寫入 PostgreSQL
 def save_fortune_to_db(sign, text, target_date):
     db_url = os.environ.get("DATABASE_URL")
     if not db_url: return
@@ -59,7 +57,6 @@ def save_fortune_to_db(sign, text, target_date):
         if 'cursor' in locals(): cursor.close()
         if 'conn' in locals(): conn.close()
 
-# 🗄️ 從 PostgreSQL 讀取資料
 def get_fortune_from_db(sign, target_date):
     db_url = os.environ.get("DATABASE_URL")
     if not db_url: return None
@@ -81,7 +78,6 @@ def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime("%Y-%m-%d")
 
-# 🧠 加入 is_background 參數，完美分流「背景」與「即時」的重試策略
 def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
     prompt = (
         f"你現在一位女性占卜師，感覺嚴肅且溫柔，還有修習過心理學碩士，非常體貼的占卜師。\n\n"
@@ -95,61 +91,74 @@ def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
         f"{long_text}"
     )
     
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        return "【錯誤診斷】Render 後台找不到 GEMINI_API_KEY。"
-        
-    client = genai.Client(api_key=api_key)
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     
-    # 🌟 2026 年最新修正：使用 Google 最新世代的免費高速模型
-    models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
-    last_error = ""
-    
-    for model_name in models_to_try:
-        delay = 4 
-        # 如果是即時查詢(Nightbot)，不准重試浪費時間，嘗試1次就夠了；背景暖機才允許重試3次
-        max_attempts = 3 if is_background else 1 
-        
-        for attempt in range(max_attempts):
-            try:
-                if is_background:
-                    print(f"嘗試使用模型 [{model_name}] 縮短 [{sign_name}] 運勢 (第 {attempt+1}/{max_attempts} 次)...")
-                    
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                )
-                ai_reply = response.text.strip()
-                
+    # ----------------------------------------------------
+    # 🚀 第一引擎：嘗試使用 Google Gemini
+    # ----------------------------------------------------
+    if gemini_key and "這裡" not in gemini_key:
+        try:
+            client = genai.Client(api_key=gemini_key)
+            models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
+            max_attempts = 3 if is_background else 1 
+            
+            for model_name in models_to_try:
+                delay = 4
+                for attempt in range(max_attempts):
+                    try:
+                        if is_background:
+                            print(f"嘗試使用 Gemini 模型 [{model_name}] 縮短 [{sign_name}] 運勢...", flush=True)
+                        response = client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                        )
+                        ai_reply = response.text.strip()
+                        if len(ai_reply) > 250:
+                            return ai_reply[:240] + "..."
+                        return ai_reply
+                    except Exception as gemini_err:
+                        err_str = str(gemini_err)
+                        # 📌 如果偵測到硬性帳單欠費(Credits depleted)，Gemini 直接棄守，改用備援引擎！
+                        if "prepayment credits" in err_str or "depleted" in err_str:
+                            print("⚠️ Gemini 帳戶欠費凍結，放棄重試，準備啟動備援 OpenRouter 引擎...", flush=True)
+                            raise RuntimeError("Gemini Billing Locked")
+                            
+                        if is_background and any(x in err_str for x in ["429", "503", "500"]):
+                            time.sleep(delay)
+                            delay *= 2
+                        else:
+                            break
+        except Exception:
+            pass # 這裡拋出的異常，會引導程式進入下方的 OpenRouter 備援防線
+
+    if openrouter_key and "這裡" not in openrouter_key:
+        try:
+            if is_background:
+                print(f"🔗 [備援啟動] 正在使用 OpenRouter 免費引擎為 [{sign_name}] 算命...", flush=True)
+            
+            url = "https://openrouter.ai/api/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {openrouter_key}",
+                "Content-Type": "application/json"
+            }
+            # openrouter/free 會自動挑選 2026 年最新、最快的免費大模型 (如 Llama 等)
+            payload = {
+                "model": "openrouter/free",
+                "messages": [{"role": "user", "content": prompt}]
+            }
+            response = requests.post(url, json=payload, headers=headers, timeout=10)
+            if response.status_code == 200:
+                ai_reply = response.json()['choices'][0]['message']['content'].strip()
                 if len(ai_reply) > 250:
                     return ai_reply[:240] + "..."
-                    
                 return ai_reply
-                
-            except Exception as e:
-                last_error = str(e)
-                if is_background:
-                    print(f"❌ 模型 [{model_name}] 失敗: {last_error}")
-                
-                if "404" in last_error or "NOT_FOUND" in last_error or "not found" in last_error:
-                    if is_background: print("👉 偵測到 404 錯誤，直接切換到下一個備援模型...")
-                    break
-                
-                if any(x in last_error for x in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500"]):
-                    # 🚨 關鍵防護：如果是 Nightbot，直接回傳錯誤，絕對不等待！
-                    if not is_background:
-                        return f"【AI 呼叫失敗】：Google 伺服器目前大塞車(503/429)，請稍後再試！"
-                        
-                    print(f"⚠️ 偵測到伺服器繁忙，背景暖機將等待 {delay} 秒後重試...")
-                    time.sleep(delay)
-                    delay *= 2
-                else:
-                    if not is_background:
-                        return f"【AI 呼叫失敗】：{last_error[:100]}..."
-                    time.sleep(delay)
-                    delay *= 2
-                    
-    return f"【AI 呼叫失敗】：所有模型與重試均已耗盡。"
+            else:
+                print(f"❌ OpenRouter 失敗 (HTTP {response.status_code}): {response.text}", flush=True)
+        except Exception as router_err:
+            print(f"❌ OpenRouter 連線異常: {router_err}", flush=True)
+            
+    return "【AI 呼叫失敗】：Gemini 帳單鎖卡，且未設定有效的 OPENROUTER_API_KEY 備援引擎。"
 
 def get_today_horoscope(sign_name):
     sign_map = {
@@ -177,7 +186,6 @@ def get_today_horoscope(sign_name):
     except Exception as e:
         return "ERROR_CONN"
 
-# 🌟 自動更新腳本（寫入資料庫）- 升級為收集報告版本 (修正回傳報告清單)
 def auto_fetch_all_signs():
     signs = [
         "牡羊座", "金牛座", "雙子座", "巨蟹座",
@@ -185,17 +193,16 @@ def auto_fetch_all_signs():
         "射手座", "摩羯座", "水瓶座", "雙魚座"
     ]
     today_date = get_tw_today()
-    report = [] # 用來收集執行結果的報告書
+    report = []
     
     msg_start = f"⏰ 開始執行 12 星座運勢背景暖機作業，今日日期：{today_date}"
-    print(msg_start, flush=True) # flush=True 強制立刻印出到 Logs
+    print(msg_start, flush=True)
     report.append(msg_start)
     
     for sign in signs:
         raw_fortune = get_today_horoscope(sign)
         
         if raw_fortune not in ["ERROR_SIGN", "ERROR_PARSE", "ERROR_CONN"]:
-            # 💡 標示為背景任務，允許耐心重試
             short_fortune = ask_gemini_to_shorten(sign, raw_fortune, is_background=True)
             final_result = f"🔮【{sign}今日運勢】{short_fortune}"
             
@@ -215,21 +222,19 @@ def auto_fetch_all_signs():
     print(msg_end, flush=True)
     report.append(msg_end)
     
-    return report # 修正：將收集到的報告傳回給前台網頁！
+    return report
 
 @app.get("/warmup")
 def warmup_cache(background_tasks: BackgroundTasks):
     background_tasks.add_task(auto_fetch_all_signs)
     return {"status": "開始在背景自動抓取 12 星座運勢，並存入雲端資料庫！大約需時 80 秒。"}
 
-# 🎯 全新加入：前台強制觀測站
 @app.get("/force-warmup")
 def force_warmup():
     """強制暖機：直接在網頁等待並顯示結果，方便除錯"""
-    report = auto_fetch_all_signs() # 這裡就能順利接到上面傳回來的報告了
+    report = auto_fetch_all_signs()
     return {"status": "強制暖機完成", "report": report}
 
-# 🕵️ 全新加入：資料庫透視鏡
 @app.get("/check-db")
 def check_database():
     """直接偷看資料庫裡面到底存了幾筆資料，以及存了什麼"""
@@ -239,7 +244,6 @@ def check_database():
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
-        # 只抓取前 15 個字做預覽，免得畫面太亂
         cursor.execute("SELECT sign, target_date, left(fortune_text, 15) FROM horoscope;")
         rows = cursor.fetchall()
         
@@ -282,7 +286,6 @@ def read_horoscope(sign: str = ""):
     elif raw_fortune == "ERROR_CONN":
         return "💥 伺服器連線異常，請稍後再試。"
         
-    # 💡 標示為即時任務，不准重試、不准睡覺等待！
     short_fortune = ask_gemini_to_shorten(sign, raw_fortune, is_background=False)
     final_result = f"🔮【{sign}今日運勢】{short_fortune}"
     
