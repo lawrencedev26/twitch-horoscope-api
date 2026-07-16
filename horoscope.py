@@ -133,7 +133,11 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
                 )
                 data = response.json()
                 if "choices" in data:
-                    reply = data['choices'][0]['message']['content'].strip()
+                    reply = data['choices'][0]['message'].get('content')
+                    if not reply:  # ⭐ 防止 content 是 None 或空字串（openrouter/free 偶爾會這樣）
+                        print(f"⚠️ [{sign_name}] 模型 {model} 回傳了空內容，換下一個模型")
+                        break
+                    reply = reply.strip()
                     if "User Safety" in reply: continue
                     return reply
 
@@ -211,7 +215,7 @@ def check_admin_key(key: str):
         return False, "密鑰錯誤，無權限執行此操作"
     return True, ""
 
-@app.delete("/admin/delete-sign")
+@app.api_route("/admin/delete-sign", methods=["GET", "DELETE"])
 def admin_delete_sign(sign: str = "", key: str = ""):
     """刪除單一星座的資料，例如 /admin/delete-sign?sign=水瓶座&key=你的密鑰"""
     ok, msg = check_admin_key(key)
@@ -228,7 +232,7 @@ def admin_delete_sign(sign: str = "", key: str = ""):
     except Exception as e:
         return {"error": str(e)}
 
-@app.delete("/admin/clear-invalid")
+@app.api_route("/admin/clear-invalid", methods=["GET", "DELETE"])
 def admin_clear_invalid(key: str = ""):
     """清除所有「不是12星座」的髒資料（例如打錯字、亂測試留下的資料），例如 /admin/clear-invalid?key=你的密鑰"""
     ok, msg = check_admin_key(key)
@@ -246,7 +250,7 @@ def admin_clear_invalid(key: str = ""):
     except Exception as e:
         return {"error": str(e)}
 
-@app.delete("/admin/clear-all")
+@app.api_route("/admin/clear-all", methods=["GET", "DELETE"])
 def admin_clear_all(key: str = ""):
     """清空整張表格，例如 /admin/clear-all?key=你的密鑰"""
     ok, msg = check_admin_key(key)
