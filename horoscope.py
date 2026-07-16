@@ -108,39 +108,50 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    # ⭐ 更新為目前 (2026/07) 仍在 OpenRouter 上可用的免費模型
-    # 注意：google/gemini 系列目前在 OpenRouter 已經沒有免費模型了，換成其他免費模型備援
+    # ⭐ deepseek / qwen 的 :free slug 已確認下架 (404)，移除。
+    # ⭐ 加上 openrouter/free 自動路由當最終備援：它會自動挑一個「目前還活著」的免費模型，
+    #    不用我們手動維護一份會過期的清單。
     models = [
         "meta-llama/llama-3.3-70b-instruct:free",
-        "deepseek/deepseek-chat-v3-0324:free",
-        "qwen/qwen2.5-vl-72b-instruct:free",
+        "openrouter/free",
     ]
 
     for model in models:
-        try:
-            response = requests.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 160,
-                    "temperature": 0.7
-                },
-                timeout=20
-            )
-            data = response.json()
-            if "choices" in data:
-                reply = data['choices'][0]['message']['content'].strip()
-                if "User Safety" in reply: continue
-                return reply
-            else:
-                # ⭐ 關鍵：把真正的錯誤原因印出來，之後看 Render Logs 就知道原因
+        # ⭐ 每個模型最多重試 2 次，遇到 429 時依照官方回傳的 retry_after_seconds 等待
+        for attempt in range(2):
+            try:
+                response = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 160,
+                        "temperature": 0.7
+                    },
+                    timeout=20
+                )
+                data = response.json()
+                if "choices" in data:
+                    reply = data['choices'][0]['message']['content'].strip()
+                    if "User Safety" in reply: continue
+                    return reply
+
+                # ⭐ 印出真正的錯誤原因，之後看 Render Logs 就知道原因
                 print(f"⚠️ [{sign_name}] 模型 {model} 回傳非預期格式，status={response.status_code}, body={data}")
-        except Exception as e:
-            print(f"⚠️ [{sign_name}] 模型 {model} 呼叫發生例外: {e}")
-            continue
-    return None  # ⭐ 改成回傳 None，而不是騙人的「呼叫失敗」文字，方便上層判斷是否該存DB
+
+                if response.status_code == 429:
+                    retry_after = data.get("error", {}).get("metadata", {}).get("retry_after_seconds", 15)
+                    retry_after = min(int(retry_after) + 2, 35)  # 多留2秒緩衝，最長等35秒
+                    print(f"⏳ [{sign_name}] 遇到限流，等待 {retry_after} 秒後重試...")
+                    time.sleep(retry_after)
+                    continue  # 重試同一個模型
+                else:
+                    break  # 非429（例如404模型不存在）就直接換下一個模型，不用重試
+            except Exception as e:
+                print(f"⚠️ [{sign_name}] 模型 {model} 呼叫發生例外: {e}")
+                break
+    return None  # ⭐ 回傳 None 而不是騙人的「呼叫失敗」文字，方便上層判斷是否該存DB
 
 def get_today_horoscope(sign_name):
     sign_id = SIGN_MAP.get(sign_name)
@@ -170,7 +181,7 @@ def auto_fetch_all_signs():
                 report.append(f"✗ {sign} (AI失敗，未寫入DB，下次查詢會重試)")
         else:
             report.append(f"✗ {sign} (爬蟲失敗: {raw})")
-        time.sleep(5)
+        time.sleep(8)  # ⭐ 從5秒拉長到8秒，降低撞到上游限流的機率
     return report
 
 @app.get("/warmup")
@@ -190,6 +201,66 @@ def check_database():
     rows = cur.fetchall()
     cur.close(); conn.close()
     return [{"星座": r[0], "預覽": r[1][:20]} for r in rows]
+
+def check_admin_key(key: str):
+    """⭐ 檢查管理密鑰是否正確，避免公開網址被任何人拿去刪資料"""
+    admin_key = os.environ.get("ADMIN_KEY")
+    if not admin_key:
+        return False, "伺服器未設定 ADMIN_KEY，請先在 Render 環境變數加上 ADMIN_KEY"
+    if key != admin_key:
+        return False, "密鑰錯誤，無權限執行此操作"
+    return True, ""
+
+@app.delete("/admin/delete-sign")
+def admin_delete_sign(sign: str = "", key: str = ""):
+    """刪除單一星座的資料，例如 /admin/delete-sign?sign=水瓶座&key=你的密鑰"""
+    ok, msg = check_admin_key(key)
+    if not ok:
+        return {"error": msg}
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute("DELETE FROM horoscope WHERE sign = %s;", (sign,))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close(); conn.close()
+        return {"status": f"已刪除 {deleted} 筆資料", "sign": sign}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.delete("/admin/clear-invalid")
+def admin_clear_invalid(key: str = ""):
+    """清除所有「不是12星座」的髒資料（例如打錯字、亂測試留下的資料），例如 /admin/clear-invalid?key=你的密鑰"""
+    ok, msg = check_admin_key(key)
+    if not ok:
+        return {"error": msg}
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(VALID_SIGNS))
+        cur.execute(f"DELETE FROM horoscope WHERE sign NOT IN ({placeholders});", tuple(VALID_SIGNS))
+        deleted = cur.rowcount
+        conn.commit()
+        cur.close(); conn.close()
+        return {"status": f"已清除 {deleted} 筆非12星座的髒資料"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.delete("/admin/clear-all")
+def admin_clear_all(key: str = ""):
+    """清空整張表格，例如 /admin/clear-all?key=你的密鑰"""
+    ok, msg = check_admin_key(key)
+    if not ok:
+        return {"error": msg}
+    try:
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE horoscope;")
+        conn.commit()
+        cur.close(); conn.close()
+        return {"status": "已清空整張資料表"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
