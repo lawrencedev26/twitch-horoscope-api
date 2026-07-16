@@ -24,8 +24,10 @@ def startup_db_client():
         print("⚠️ 警告：未設定 DATABASE_URL 環境變數")
         return
     # ⭐ 開機時就檢查 API KEY 是否存在，方便你在 Render Logs 第一時間發現問題
+    if not os.environ.get("GROQ_API_KEY"):
+        print("⚠️ 警告：未設定 GROQ_API_KEY，主要AI服務無法使用，會直接fallback到OpenRouter")
     if not os.environ.get("OPENROUTER_API_KEY"):
-        print("⚠️ 警告：未設定 OPENROUTER_API_KEY 環境變數，AI 一定會失敗！")
+        print("⚠️ 警告：未設定 OPENROUTER_API_KEY，備援AI服務也無法使用！")
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
@@ -87,9 +89,9 @@ def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime("%Y-%m-%d")
 
-# 🧠 純 OpenRouter 翻譯器
-def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
-    prompt = (
+# 🧠 產生統一的 prompt
+def build_prompt(long_text):
+    return (
         f"你現在一位女性占卜師，感覺嚴肅且溫柔，還有修習過心理學碩士，非常體貼的占卜師。\n\n"
         f"【絕對命令】：請將下方運勢長文濃縮成『大約 120 到 150 字左右』的精闢短評。\n"
         f"【規則要求】：\n"
@@ -101,23 +103,67 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
         f"【運勢長文】：\n{long_text}"
     )
 
-    api_key = os.environ.get("OPENROUTER_API_KEY")
+# ⭐ 主力：Groq（速度快、額度穩，跟 OpenRouter 是完全獨立的免費額度）
+def call_groq(sign_name, prompt):
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
-        print("❌ OPENROUTER_API_KEY 未設定，無法呼叫 AI")
+        print("⚠️ GROQ_API_KEY 未設定，跳過 Groq，改用 OpenRouter")
         return None
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
-    # ⭐ deepseek / qwen 的 :free slug 已確認下架 (404)，移除。
-    # ⭐ 加上 openrouter/free 自動路由當最終備援：它會自動挑一個「目前還活著」的免費模型，
-    #    不用我們手動維護一份會過期的清單。
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "max_tokens": 160,
+                    "temperature": 0.7
+                },
+                timeout=20
+            )
+            data = response.json()
+            if "choices" in data:
+                reply = data['choices'][0]['message'].get('content')
+                if reply:
+                    reply = reply.strip()
+                    if "User Safety" not in reply:
+                        return reply
+                print(f"⚠️ [{sign_name}] Groq 回傳了空內容")
+                return None
+
+            print(f"⚠️ [{sign_name}] Groq 回傳非預期格式，status={response.status_code}, body={data}")
+            if response.status_code == 429:
+                # Groq 的 429 通常是短時間額度用完，等 retry-after header 或固定秒數
+                retry_after = int(response.headers.get("retry-after", 10))
+                retry_after = min(retry_after + 2, 20)
+                print(f"⏳ [{sign_name}] Groq 限流，等待 {retry_after} 秒後重試...")
+                time.sleep(retry_after)
+                continue
+            return None
+        except Exception as e:
+            print(f"⚠️ [{sign_name}] Groq 呼叫發生例外: {e}")
+            return None
+    return None
+
+# 🔁 備援：OpenRouter（Groq 失敗時才會用到）
+def call_openrouter(sign_name, prompt):
+    api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        print("⚠️ OPENROUTER_API_KEY 未設定，無備援可用")
+        return None
+
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+
     models = [
         "meta-llama/llama-3.3-70b-instruct:free",
         "openrouter/free",
     ]
 
     for model in models:
-        # ⭐ 每個模型最多重試 2 次，遇到 429 時依照官方回傳的 retry_after_seconds 等待
         for attempt in range(2):
             try:
                 response = requests.post(
@@ -134,28 +180,38 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
                 data = response.json()
                 if "choices" in data:
                     reply = data['choices'][0]['message'].get('content')
-                    if not reply:  # ⭐ 防止 content 是 None 或空字串（openrouter/free 偶爾會這樣）
+                    if not reply:
                         print(f"⚠️ [{sign_name}] 模型 {model} 回傳了空內容，換下一個模型")
                         break
                     reply = reply.strip()
                     if "User Safety" in reply: continue
                     return reply
 
-                # ⭐ 印出真正的錯誤原因，之後看 Render Logs 就知道原因
                 print(f"⚠️ [{sign_name}] 模型 {model} 回傳非預期格式，status={response.status_code}, body={data}")
 
                 if response.status_code == 429:
                     retry_after = data.get("error", {}).get("metadata", {}).get("retry_after_seconds", 15)
-                    retry_after = min(int(retry_after) + 2, 35)  # 多留2秒緩衝，最長等35秒
+                    retry_after = min(int(retry_after) + 2, 35)
                     print(f"⏳ [{sign_name}] 遇到限流，等待 {retry_after} 秒後重試...")
                     time.sleep(retry_after)
-                    continue  # 重試同一個模型
+                    continue
                 else:
-                    break  # 非429（例如404模型不存在）就直接換下一個模型，不用重試
+                    break
             except Exception as e:
                 print(f"⚠️ [{sign_name}] 模型 {model} 呼叫發生例外: {e}")
                 break
-    return None  # ⭐ 回傳 None 而不是騙人的「呼叫失敗」文字，方便上層判斷是否該存DB
+    return None
+
+# 🎯 統一入口：先試 Groq，失敗才 fallback 到 OpenRouter
+def ask_ai_to_shorten(sign_name, long_text, is_background=False):
+    prompt = build_prompt(long_text)
+
+    reply = call_groq(sign_name, prompt)
+    if reply:
+        return reply
+
+    print(f"↪️ [{sign_name}] Groq 失敗，改用 OpenRouter 備援...")
+    return call_openrouter(sign_name, prompt)
 
 def get_today_horoscope(sign_name):
     sign_id = SIGN_MAP.get(sign_name)
@@ -177,7 +233,7 @@ def auto_fetch_all_signs():
     for sign in signs:
         raw = get_today_horoscope(sign)
         if "ERROR" not in raw:
-            short = ask_openrouter_to_shorten(sign, raw, is_background=True)
+            short = ask_ai_to_shorten(sign, raw, is_background=True)
             if short:  # ⭐ 只有真正成功才寫入DB，避免整天卡死在失敗文字
                 save_fortune_to_db(sign, f"🔮【{sign}今日運勢】{short}", get_tw_today())
                 report.append(f"✓ {sign}")
@@ -283,7 +339,7 @@ def read_horoscope(sign: str = ""):
         # ⭐ 爬蟲失敗就不要浪費 AI 額度，也不要存入DB
         return f"🔮【{sign}】運勢來源暫時抓取失敗，請稍後再試一次！"
 
-    short = ask_openrouter_to_shorten(sign, raw, is_background=False)
+    short = ask_ai_to_shorten(sign, raw, is_background=False)
     if not short:
         # ⭐ AI失敗不寫入DB，讓下一次查詢有機會重新成功
         return f"🔮【{sign}】AI 目前忙碌中，請稍後再試一次！"
