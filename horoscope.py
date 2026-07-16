@@ -209,6 +209,45 @@ def warmup_cache(background_tasks: BackgroundTasks):
     background_tasks.add_task(auto_fetch_all_signs)
     return {"status": "開始在背景自動抓取 12 星座運勢，並存入雲端資料庫！大約需時 80 秒。"}
 
+# 🎯 全新加入：前台強制觀測站
+@app.get("/force-warmup")
+def force_warmup():
+    """強制暖機：直接在網頁等待並顯示結果，方便除錯"""
+    report = auto_fetch_all_signs()
+    return {"status": "強制暖機完成", "report": report}
+
+# 🕵️ 全新加入：資料庫透視鏡
+@app.get("/check-db")
+def check_database():
+    """直接偷看資料庫裡面到底存了幾筆資料，以及存了什麼"""
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url: 
+        return {"status": "找不到 DATABASE_URL 環境變數"}
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        # 只抓取前 15 個字做預覽，免得畫面太亂
+        cursor.execute("SELECT sign, target_date, left(fortune_text, 15) FROM horoscope;")
+        rows = cursor.fetchall()
+        
+        result = []
+        for row in rows:
+            result.append({
+                "星座": row[0], 
+                "寫入日期": row[1], 
+                "運勢預覽": row[2] + "..."
+            })
+            
+        return {
+            "目前總筆數": len(result), 
+            "詳細清單": result
+        }
+    except Exception as e:
+        return {"error": f"讀取失敗: {e}"}
+    finally:
+        if 'cursor' in locals(): cursor.close()
+        if 'conn' in locals(): conn.close()
+
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
     if not sign:
