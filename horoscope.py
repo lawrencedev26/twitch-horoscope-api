@@ -101,6 +101,7 @@ def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
         
     client = genai.Client(api_key=api_key)
     
+    # 修正：降級備援建議使用最經典不死的 1.5-flash
     models_to_try = ['gemini-2.0-flash', 'gemini-2.5-flash']
     last_error = ""
     
@@ -153,7 +154,7 @@ def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
 def get_today_horoscope(sign_name):
     sign_map = {
         "牡羊座": 0, "金牛座": 1, "雙子座": 2, "巨蟹座": 3,
-        "獅子座": 4, "处女座": 5, "天秤座": 6, "天蠍座": 7,
+        "獅子座": 4, "處女座": 5, "天秤座": 6, "天蠍座": 7,
         "射手座": 8, "摩羯座": 9, "水瓶座": 10, "雙魚座": 11
     }
     sign_id = sign_map.get(sign_name)
@@ -176,7 +177,7 @@ def get_today_horoscope(sign_name):
     except Exception as e:
         return "ERROR_CONN"
 
-# 🌟 自動更新腳本（寫入資料庫）
+# 🌟 自動更新腳本（寫入資料庫）- 升級為收集報告版本 (修正回傳報告清單)
 def auto_fetch_all_signs():
     signs = [
         "牡羊座", "金牛座", "雙子座", "巨蟹座",
@@ -184,8 +185,11 @@ def auto_fetch_all_signs():
         "射手座", "摩羯座", "水瓶座", "雙魚座"
     ]
     today_date = get_tw_today()
+    report = [] # 用來收集執行結果的報告書
     
-    print(f"⏰ 開始執行 12 星座運勢背景暖機作業，今日日期：{today_date}")
+    msg_start = f"⏰ 開始執行 12 星座運勢背景暖機作業，今日日期：{today_date}"
+    print(msg_start, flush=True) # flush=True 強制立刻印出到 Logs
+    report.append(msg_start)
     
     for sign in signs:
         raw_fortune = get_today_horoscope(sign)
@@ -197,12 +201,21 @@ def auto_fetch_all_signs():
             
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
                 save_fortune_to_db(sign, final_result, today_date)
+                msg_success = f"✓ [{sign}] 成功寫入資料庫！"
+                print(msg_success, flush=True)
+                report.append(msg_success)
             else:
-                print(f"❌ [{sign}] 暖機失敗，跳過寫入資料庫。")
+                msg_fail = f"❌ [{sign}] 暖機失敗，原因: {short_fortune}"
+                print(msg_fail, flush=True)
+                report.append(msg_fail)
                 
         time.sleep(6)
     
-    print("✨ 背景暖機作業結束！")
+    msg_end = "✨ 暖機作業結束！"
+    print(msg_end, flush=True)
+    report.append(msg_end)
+    
+    return report # 修正：將收集到的報告傳回給前台網頁！
 
 @app.get("/warmup")
 def warmup_cache(background_tasks: BackgroundTasks):
@@ -213,7 +226,7 @@ def warmup_cache(background_tasks: BackgroundTasks):
 @app.get("/force-warmup")
 def force_warmup():
     """強制暖機：直接在網頁等待並顯示結果，方便除錯"""
-    report = auto_fetch_all_signs()
+    report = auto_fetch_all_signs() # 這裡就能順利接到上面傳回來的報告了
     return {"status": "強制暖機完成", "report": report}
 
 # 🕵️ 全新加入：資料庫透視鏡
