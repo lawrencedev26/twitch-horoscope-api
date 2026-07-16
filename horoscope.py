@@ -11,6 +11,11 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 app = FastAPI()
 
+# ⭐ 12 星座白名單（唯一合法輸入來源，其他一律拒絕）
+SIGN_MAP = {"牡羊座":0,"金牛座":1,"雙子座":2,"巨蟹座":3,"獅子座":4,"處女座":5,
+            "天秤座":6,"天蠍座":7,"射手座":8,"摩羯座":9,"水瓶座":10,"雙魚座":11}
+VALID_SIGNS = set(SIGN_MAP.keys())
+
 # 🚀 程式啟動時，自動檢查並建立資料庫表格
 @app.on_event("startup")
 def startup_db_client():
@@ -18,6 +23,9 @@ def startup_db_client():
     if not db_url:
         print("⚠️ 警告：未設定 DATABASE_URL 環境變數")
         return
+    # ⭐ 開機時就檢查 API KEY 是否存在，方便你在 Render Logs 第一時間發現問題
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        print("⚠️ 警告：未設定 OPENROUTER_API_KEY 環境變數，AI 一定會失敗！")
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
@@ -79,7 +87,7 @@ def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime("%Y-%m-%d")
 
-# 🧠 純 OpenRouter 翻譯器 (移除所有 Gemini 依賴)
+# 🧠 純 OpenRouter 翻譯器
 def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
     prompt = (
         f"你現在一位女性占卜師，感覺嚴肅且溫柔，還有修習過心理學碩士，非常體貼的占卜師。\n\n"
@@ -92,13 +100,22 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
         f"5. 最後一句話必須完整，並以全形句號「。」作結尾。\n\n"
         f"【運勢長文】：\n{long_text}"
     )
-    
+
     api_key = os.environ.get("OPENROUTER_API_KEY")
+    if not api_key:
+        print("❌ OPENROUTER_API_KEY 未設定，無法呼叫 AI")
+        return None
+
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    
-    # 使用目前對中文支援極好的免費模型
-    models = ["meta-llama/llama-3.3-70b-instruct:free", "google/gemini-2.0-flash-lite-preview-02-05:free"]
-    
+
+    # ⭐ 更新為目前 (2026/07) 仍在 OpenRouter 上可用的免費模型
+    # 注意：google/gemini 系列目前在 OpenRouter 已經沒有免費模型了，換成其他免費模型備援
+    models = [
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "deepseek/deepseek-chat-v3-0324:free",
+        "qwen/qwen2.5-vl-72b-instruct:free",
+    ]
+
     for model in models:
         try:
             response = requests.post(
@@ -107,43 +124,52 @@ def ask_openrouter_to_shorten(sign_name, long_text, is_background=False):
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 160, # 物理限制長度
+                    "max_tokens": 160,
                     "temperature": 0.7
                 },
-                timeout=15
+                timeout=20
             )
             data = response.json()
             if "choices" in data:
                 reply = data['choices'][0]['message']['content'].strip()
-                # 簡單過濾亂碼
                 if "User Safety" in reply: continue
                 return reply
-        except:
+            else:
+                # ⭐ 關鍵：把真正的錯誤原因印出來，之後看 Render Logs 就知道原因
+                print(f"⚠️ [{sign_name}] 模型 {model} 回傳非預期格式，status={response.status_code}, body={data}")
+        except Exception as e:
+            print(f"⚠️ [{sign_name}] 模型 {model} 呼叫發生例外: {e}")
             continue
-    return "【AI 呼叫失敗】：目前系統繁忙，請稍後再試。"
+    return None  # ⭐ 改成回傳 None，而不是騙人的「呼叫失敗」文字，方便上層判斷是否該存DB
 
 def get_today_horoscope(sign_name):
-    sign_map = {"牡羊座":0,"金牛座":1,"雙子座":2,"巨蟹座":3,"獅子座":4,"處女座":5,"天秤座":6,"天蠍座":7,"射手座":8,"摩羯座":9,"水瓶座":10,"雙魚座":11}
-    sign_id = sign_map.get(sign_name)
+    sign_id = SIGN_MAP.get(sign_name)
     if sign_id is None: return "ERROR_SIGN"
     url = f"https://astro.click108.com.tw/daily_{sign_id}.php?iAstro={sign_id}"
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=5)
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, verify=False, timeout=8)
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, "html.parser")
         content = soup.find(class_="TODAY_CONTENT")
         return content.text.replace("\n", " ").strip() if content else "ERROR_PARSE"
-    except: return "ERROR_CONN"
+    except Exception as e:
+        print(f"❌ [{sign_name}] 爬蟲失敗: {e}")
+        return "ERROR_CONN"
 
 def auto_fetch_all_signs():
-    signs = ["牡羊座", "金牛座", "雙子座", "巨蟹座", "獅子座", "處女座", "天秤座", "天蠍座", "射手座", "摩羯座", "水瓶座", "雙魚座"]
+    signs = list(SIGN_MAP.keys())
     report = []
     for sign in signs:
         raw = get_today_horoscope(sign)
         if "ERROR" not in raw:
             short = ask_openrouter_to_shorten(sign, raw, is_background=True)
-            save_fortune_to_db(sign, f"🔮【{sign}今日運勢】{short}", get_tw_today())
-            report.append(f"✓ {sign}")
+            if short:  # ⭐ 只有真正成功才寫入DB，避免整天卡死在失敗文字
+                save_fortune_to_db(sign, f"🔮【{sign}今日運勢】{short}", get_tw_today())
+                report.append(f"✓ {sign}")
+            else:
+                report.append(f"✗ {sign} (AI失敗，未寫入DB，下次查詢會重試)")
+        else:
+            report.append(f"✗ {sign} (爬蟲失敗: {raw})")
         time.sleep(5)
     return report
 
@@ -167,11 +193,26 @@ def check_database():
 
 @app.get("/horoscope")
 def read_horoscope(sign: str = ""):
-    if not sign: return "請輸入星座"
+    sign = sign.strip()
+
+    # ⭐ 白名單驗證：只接受 12 星座，其他一律拒絕、且不寫入DB
+    if sign not in VALID_SIGNS:
+        return f"請輸入正確的星座名稱喔，例如：牡羊座、金牛座... (你輸入的「{sign}」不是有效星座)"
+
     db_res = get_fortune_from_db(sign, get_tw_today())
-    if db_res: return db_res
+    if db_res:
+        return db_res
+
     raw = get_today_horoscope(sign)
+    if "ERROR" in raw:
+        # ⭐ 爬蟲失敗就不要浪費 AI 額度，也不要存入DB
+        return f"🔮【{sign}】運勢來源暫時抓取失敗，請稍後再試一次！"
+
     short = ask_openrouter_to_shorten(sign, raw, is_background=False)
+    if not short:
+        # ⭐ AI失敗不寫入DB，讓下一次查詢有機會重新成功
+        return f"🔮【{sign}】AI 目前忙碌中，請稍後再試一次！"
+
     final = f"🔮【{sign}今日運勢】{short}"
     save_fortune_to_db(sign, final, get_tw_today())
     return final
