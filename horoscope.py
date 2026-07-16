@@ -101,8 +101,8 @@ def ask_gemini_to_shorten(sign_name, long_text, is_background=False):
         
     client = genai.Client(api_key=api_key)
     
-    # 修正：降級備援建議使用最經典不死的 1.5-flash
-    models_to_try = ['gemini-1.5-flash', 'gemini-2.0-flash']
+    # 🌟 2026 年最新修正：使用 Google 最新世代的免費高速模型
+    models_to_try = ['gemini-3.5-flash', 'gemini-3.1-flash-lite']
     last_error = ""
     
     for model_name in models_to_try:
