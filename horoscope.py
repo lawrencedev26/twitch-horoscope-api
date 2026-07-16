@@ -81,7 +81,7 @@ def get_tw_today():
     tw_tz = timezone(timedelta(hours=8))
     return datetime.now(tw_tz).strftime("%Y-%m-%d")
 
-# 🧠 核心升級：具有 5 次指數退避重試機值的 AI 翻譯器
+# 🧠 終極工業級升級：具有「伺服器繁忙自動重試」與「多重模型無痛降級」的翻譯器
 def ask_gemini_to_shorten(sign_name, long_text):
     prompt = (
         f"你現在一位女性占卜師，感覺嚴肅且溫柔，還有修習過心理學碩士，非常體貼的占卜師。\n\n"
@@ -101,42 +101,52 @@ def ask_gemini_to_shorten(sign_name, long_text):
         
     client = genai.Client(api_key=api_key)
     
-    max_retries = 5
-    delay = 5  # 初始重試等待 5 秒
+    # 🌟 優先嘗試 2.0-flash，如果被塞爆或找不到，無縫接軌備援 1.5-flash
+    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash']
+    last_error = ""
     
-    for attempt in range(max_retries):
-        try:
-            # 使用官方最推薦、最穩定的免費版主力模型 gemini-2.5-flash
-            response = client.models.generate_content(
-                model='gemini-3.5-flash',
-                contents=prompt,
-            )
-            ai_reply = response.text.strip()
-            
-            if len(ai_reply) > 250:
-                return ai_reply[:240] + "..."
+    for model_name in models_to_try:
+        delay = 4  # 初始等待 4 秒
+        for attempt in range(3):  # 每個模型嘗試 3 次
+            try:
+                print(f"嘗試使用模型 [{model_name}] 縮短 [{sign_name}] 運勢 (第 {attempt+1}/3 次)...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                )
+                ai_reply = response.text.strip()
                 
-            return ai_reply
-            
-        except Exception as e:
-            error_msg = str(e)
-            # 如果是因為 429 速率限制或配額問題，觸發重試機制
-            if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                print(f"⚠️ [{sign_name}] 觸發 Gemini 429 限制，將於 {delay} 秒後進行第 {attempt + 1}/{max_retries} 次重試...")
-                time.sleep(delay)
-                delay *= 2  # 每次失敗等待時間加倍 (5s, 10s, 20s, 40s)
-            else:
-                # 其他非 429 的硬性錯誤（例如 API Key 錯誤）直接返回，不浪費時間重試
-                if len(error_msg) > 100:
-                    error_msg = error_msg[:100] + "..."
-                return f"【AI 呼叫失敗】：{error_msg}"
+                if len(ai_reply) > 250:
+                    return ai_reply[:240] + "..."
+                    
+                return ai_reply
                 
-    return f"【AI 呼叫失敗】：Gemini 限制重試 {max_retries} 次均告失敗。"
+            except Exception as e:
+                last_error = str(e)
+                print(f"❌ 模型 [{model_name}] 失敗: {last_error}")
+                
+                # 📌 關鍵判定 1：如果是 404（模型不存在），不用重試了，直接中斷嘗試下一個備用模型！
+                if "404" in last_error or "NOT_FOUND" in last_error or "not found" in last_error:
+                    print("👉 偵測到 404 錯誤，直接切換到下一個備援模型...")
+                    break
+                
+                # 📌 關鍵判定 2：新增攔截 503 UNAVAILABLE 與 500！遇到伺服器大塞車，乖乖等待重試
+                if any(x in last_error for x in ["429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE", "500"]):
+                    print(f"⚠️ 偵測到伺服器繁忙/配額限制，等待 {delay} 秒後重試...")
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    # 其他未知錯誤，也進行重試，確保最大生還率
+                    time.sleep(delay)
+                    delay *= 2
+                    
+    # 如果所有模型的所有重試都爆了，才回傳失敗
+    return f"【AI 呼叫失敗】：{last_error[:100]}..."
 
 def get_today_horoscope(sign_name):
     sign_map = {
         "牡羊座": 0, "金牛座": 1, "雙子座": 2, "巨蟹座": 3,
-        "獅子座": 4, "處女座": 5, "天秤座": 6, "天蠍座": 7,
+        "獅子座": 4, "处女座": 5, "天秤座": 6, "天蠍座": 7,
         "射手座": 8, "摩羯座": 9, "水瓶座": 10, "雙魚座": 11
     }
     sign_id = sign_map.get(sign_name)
@@ -177,13 +187,11 @@ def auto_fetch_all_signs():
             short_fortune = ask_gemini_to_shorten(sign, raw_fortune)
             final_result = f"🔮【{sign}今日運勢】{short_fortune}"
             
-            # 只有在 AI 呼叫成功時，才存入資料庫
             if "【AI 呼叫失敗】" not in final_result and "錯誤診斷" not in final_result:
                 save_fortune_to_db(sign, final_result, today_date)
             else:
                 print(f"❌ [{sign}] 暖機失敗，跳過寫入資料庫。")
                 
-        # 停頓 6 秒（安全降頻，避免頻繁觸發 15 RPM 限制）
         time.sleep(6)
     
     print("✨ 背景暖機作業結束！")
@@ -205,7 +213,7 @@ def read_horoscope(sign: str = ""):
     if db_fortune:
         return db_fortune
         
-    # 如果資料庫沒有（例如暖機中途失敗漏掉的星座），才即時抓取
+    # 如果資料庫沒有，才即時抓取
     raw_fortune = get_today_horoscope(sign)
     if raw_fortune == "ERROR_SIGN":
         return "🔮 請輸入正確的星座名稱（例如：!星座 雙子座）"
