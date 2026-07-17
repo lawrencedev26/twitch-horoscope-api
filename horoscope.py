@@ -328,7 +328,7 @@ def read_horoscope(sign: str = ""):
 
     # ⭐ 白名單驗證：只接受 12 星座，其他一律拒絕、且不寫入DB
     if sign not in VALID_SIGNS:
-        return f"您輸入的「{sign}」不是十二星座，請重新輸入十二星座的名稱來看今日運勢，例如：牡羊座、金牛座..."
+        return f"您輸入的「{sign}」，請重新輸入十二星座的名稱來看今日運勢，例如：牡羊座、金牛座..."
 
     db_res = get_fortune_from_db(sign, get_tw_today())
     if db_res:
